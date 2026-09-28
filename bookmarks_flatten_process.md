@@ -16,9 +16,11 @@ Take a nested Vivaldi bookmark export, flatten bookmarks, remove duplicates, and
 6. Choose one output mode:
 	- `--group-domains` writes a single HTML file containing folders for grouped domains plus an `unsorted` folder.
 	- `--split-domains` writes a directory containing one HTML file per grouped domain plus `unsorted.html`.
-7. Place bookmarks into domain groups only when a domain has 2 or more bookmarks.
-8. Write either one flat Netscape-format HTML file or the selected grouped output mode.
-9. Verify the output opens as bookmark files and that the resulting layout matches the selected options.
+7. Optionally pass `--exclude-domains` with a pipe-separated list such as `youtube.com|x.com` to remove matching bookmarks from the main output.
+8. Optionally pass `--split-excluded-domains` to write one HTML file per excluded domain.
+9. Place bookmarks into domain groups only when a domain has 2 or more bookmarks.
+10. Write either one flat Netscape-format HTML file or the selected grouped output mode.
+11. Verify the output opens as bookmark files and that the resulting layout matches the selected options.
 
 ## Notes
 
@@ -27,4 +29,6 @@ Take a nested Vivaldi bookmark export, flatten bookmarks, remove duplicates, and
 - The domain grouping uses a best-effort absolute-domain heuristic so bookmarks from the same registered site can be collected together.
 - `--group-domains` and `--split-domains` are mutually exclusive.
 - When domain grouping is enabled, singletons and entries without a shared domain are collected into `unsorted` or `unsorted.html` depending on the chosen mode.
+- `--exclude-domains` is pipe-separated and matches both hostnames and absolute domains.
+- `--split-excluded-domains` writes one HTML file per excluded domain next to the main output location.
 - The output stays in standard Netscape bookmark HTML so it can be imported back into Vivaldi or other browsers.

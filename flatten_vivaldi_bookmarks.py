@@ -240,6 +240,47 @@ def sanitize_filename(value: str) -> str:
     return sanitized or "unsorted"
 
 
+def parse_domain_list(value: str) -> set[str]:
+    domains = {
+        part.strip().casefold().rstrip(".") for part in value.split("|") if part.strip()
+    }
+    return domains
+
+
+def matches_excluded_domain(entry: BookmarkEntry, excluded_domains: set[str]) -> bool:
+    if not excluded_domains:
+        return False
+
+    for candidate in (entry.hostname, entry.domain):
+        candidate = candidate.casefold().rstrip(".")
+        if candidate and candidate in excluded_domains:
+            return True
+        if candidate:
+            labels = candidate.split(".")
+            for index in range(len(labels) - 1):
+                suffix = ".".join(labels[index:])
+                if suffix in excluded_domains:
+                    return True
+    return False
+
+
+def partition_excluded_entries(
+    entries: Iterable[BookmarkEntry], excluded_domains: set[str]
+) -> tuple[list[BookmarkEntry], dict[str, list[BookmarkEntry]]]:
+    kept: list[BookmarkEntry] = []
+    excluded_by_domain: dict[str, list[BookmarkEntry]] = defaultdict(list)
+
+    for entry in entries:
+        if matches_excluded_domain(entry, excluded_domains):
+            excluded_by_domain[entry.domain or entry.hostname or entry.href].append(
+                entry
+            )
+        else:
+            kept.append(entry)
+
+    return kept, excluded_by_domain
+
+
 def build_output(entries: Iterable[BookmarkEntry], title: str) -> str:
     sorted_entries = list(entries)
     lines = [
@@ -348,25 +389,64 @@ def write_grouped_outputs(
     return written_files
 
 
+def write_excluded_domain_outputs(
+    excluded_by_domain: dict[str, list[BookmarkEntry]],
+    target_path: Path,
+    sort_mode: str,
+) -> int:
+    target_directory = target_path
+    if target_directory.suffix.lower() == ".html":
+        target_directory = target_directory.with_suffix("")
+    target_directory.mkdir(parents=True, exist_ok=True)
+
+    written_files = 0
+    for domain in sorted(excluded_by_domain):
+        file_path = target_directory / f"{sanitize_filename(domain)}.html"
+        write_flat_output(
+            sort_entries(excluded_by_domain[domain], sort_mode), file_path, domain
+        )
+        written_files += 1
+
+    return written_files
+
+
 def flatten_bookmarks(
     source_path: Path,
     target_path: Path,
     sort_mode: str,
     group_mode: str,
+    excluded_domains: set[str],
+    split_excluded_domains: bool,
 ) -> tuple[int, int, int]:
     parser = BookmarkParser()
     parser.feed(source_path.read_text(encoding="utf-8"))
     entries = dedupe_entries(parser.entries)
+    entries, excluded_by_domain = partition_excluded_entries(entries, excluded_domains)
+
+    excluded_file_count = 0
+    if split_excluded_domains and excluded_by_domain:
+        excluded_target = (
+            target_path.with_suffix("")
+            if target_path.suffix.lower() == ".html"
+            else target_path
+        )
+        excluded_target = excluded_target.parent / f"{excluded_target.name}_excluded"
+        excluded_file_count = write_excluded_domain_outputs(
+            excluded_by_domain,
+            excluded_target,
+            sort_mode,
+        )
+
     if group_mode == "split":
         written_files = write_grouped_outputs(entries, target_path, sort_mode)
-        return len(parser.entries), len(entries), written_files
+        return len(parser.entries), len(entries), written_files + excluded_file_count
 
     if group_mode == "single":
         write_grouped_html_output(entries, target_path, sort_mode, "Bookmarks")
-        return len(parser.entries), len(entries), 1
+        return len(parser.entries), len(entries), 1 + excluded_file_count
 
     write_flat_output(entries, target_path, "Bookmarks")
-    return len(parser.entries), len(entries), 0
+    return len(parser.entries), len(entries), excluded_file_count
 
 
 def main() -> int:
@@ -402,6 +482,16 @@ def main() -> int:
         action="store_true",
         help="Create one HTML file per domain group and an unsorted.html file",
     )
+    parser.add_argument(
+        "--exclude-domains",
+        default="",
+        help="Pipe-separated domain list to exclude, for example youtube.com|x.com",
+    )
+    parser.add_argument(
+        "--split-excluded-domains",
+        action="store_true",
+        help="Write one HTML file per excluded domain alongside the main output",
+    )
     args = parser.parse_args()
 
     source_path = Path(args.source)
@@ -409,11 +499,14 @@ def main() -> int:
     group_mode = (
         "single" if args.group_domains else "split" if args.split_domains else "none"
     )
+    excluded_domains = parse_domain_list(args.exclude_domains)
     total, unique, domain_folders = flatten_bookmarks(
         source_path,
         target_path,
         args.sort,
         group_mode,
+        excluded_domains,
+        args.split_excluded_domains,
     )
     if group_mode == "split":
         output_location = (
