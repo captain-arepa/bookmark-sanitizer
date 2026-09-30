@@ -29,6 +29,22 @@ class BookmarkEntry:
     attrs: list[tuple[str, str]] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class OutputGroupSummary:
+    name: str
+    count: int
+
+
+@dataclass(slots=True)
+class RunSummary:
+    original_count: int
+    duplicate_count: int
+    resulting_count: int
+    group_count: int
+    groups: list[OutputGroupSummary]
+    generated_file_count: int = 0
+
+
 class BookmarkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
@@ -252,7 +268,6 @@ def matches_excluded_domain(entry: BookmarkEntry, excluded_domains: set[str]) ->
         return False
 
     for candidate in (entry.hostname, entry.domain):
-        candidate = candidate.casefold().rstrip(".")
         if candidate and candidate in excluded_domains:
             return True
         if candidate:
@@ -279,6 +294,53 @@ def partition_excluded_entries(
             kept.append(entry)
 
     return kept, excluded_by_domain
+
+
+def collect_group_summaries(
+    entries: Iterable[BookmarkEntry], sort_mode: str, group_mode: str
+) -> list[OutputGroupSummary]:
+    if group_mode == "none":
+        return []
+
+    folders, unsorted_entries = grouped_items(
+        sort_entries(entries, sort_mode), sort_mode
+    )
+    summaries = [
+        OutputGroupSummary(name=domain, count=len(domain_entries))
+        for _, domain, domain_entries in folders
+    ]
+    if unsorted_entries:
+        summaries.append(
+            OutputGroupSummary(name="unsorted", count=len(unsorted_entries))
+        )
+    return summaries
+
+
+def build_report(summary: RunSummary, output_mode: str) -> str:
+    lines = [
+        "Bookmark Report",
+        f"- original number of bookmarks: {summary.original_count}",
+        f"- duplicate bookmarks deleted: {summary.duplicate_count}",
+        f"- resulting number of bookmark groups/folders: {summary.group_count}",
+        f"- total number of resulting bookmarks: {summary.resulting_count}",
+    ]
+
+    if summary.groups:
+        lines.append("- generated bookmark groups:")
+        total = summary.resulting_count or 0
+        for group in sorted(
+            summary.groups, key=lambda item: (-item.count, item.name.casefold())
+        ):
+            percentage = (group.count / total * 100) if total else 0.0
+            lines.append(f"  - {group.name}: {group.count} ({percentage:.2f}%)")
+    else:
+        lines.append("- generated bookmark groups: none")
+
+    lines.append(f"- output mode: {output_mode}")
+    if summary.generated_file_count:
+        lines.append(f"- generated output files: {summary.generated_file_count}")
+
+    return "\n".join(lines)
 
 
 def build_output(entries: Iterable[BookmarkEntry], title: str) -> str:
@@ -417,13 +479,16 @@ def flatten_bookmarks(
     group_mode: str,
     excluded_domains: set[str],
     split_excluded_domains: bool,
-) -> tuple[int, int, int]:
+) -> RunSummary:
     parser = BookmarkParser()
     parser.feed(source_path.read_text(encoding="utf-8"))
+    original_count = len(parser.entries)
     entries = dedupe_entries(parser.entries)
+    duplicate_count = original_count - len(entries)
     entries, excluded_by_domain = partition_excluded_entries(entries, excluded_domains)
+    main_groups = collect_group_summaries(entries, sort_mode, group_mode)
 
-    excluded_file_count = 0
+    generated_file_count = 0
     if split_excluded_domains and excluded_by_domain:
         excluded_target = (
             target_path.with_suffix("")
@@ -431,7 +496,7 @@ def flatten_bookmarks(
             else target_path
         )
         excluded_target = excluded_target.parent / f"{excluded_target.name}_excluded"
-        excluded_file_count = write_excluded_domain_outputs(
+        generated_file_count = write_excluded_domain_outputs(
             excluded_by_domain,
             excluded_target,
             sort_mode,
@@ -439,14 +504,35 @@ def flatten_bookmarks(
 
     if group_mode == "split":
         written_files = write_grouped_outputs(entries, target_path, sort_mode)
-        return len(parser.entries), len(entries), written_files + excluded_file_count
+        return RunSummary(
+            original_count=original_count,
+            duplicate_count=duplicate_count,
+            resulting_count=len(entries),
+            group_count=len(main_groups),
+            groups=main_groups,
+            generated_file_count=written_files + generated_file_count,
+        )
 
     if group_mode == "single":
         write_grouped_html_output(entries, target_path, sort_mode, "Bookmarks")
-        return len(parser.entries), len(entries), 1 + excluded_file_count
+        return RunSummary(
+            original_count=original_count,
+            duplicate_count=duplicate_count,
+            resulting_count=len(entries),
+            group_count=len(main_groups),
+            groups=main_groups,
+            generated_file_count=1 + generated_file_count,
+        )
 
     write_flat_output(entries, target_path, "Bookmarks")
-    return len(parser.entries), len(entries), excluded_file_count
+    return RunSummary(
+        original_count=original_count,
+        duplicate_count=duplicate_count,
+        resulting_count=len(entries),
+        group_count=len(main_groups),
+        groups=main_groups,
+        generated_file_count=generated_file_count,
+    )
 
 
 def main() -> int:
@@ -492,6 +578,16 @@ def main() -> int:
         action="store_true",
         help="Write one HTML file per excluded domain alongside the main output",
     )
+    report_outputs = parser.add_mutually_exclusive_group()
+    report_outputs.add_argument(
+        "--report",
+        action="store_true",
+        help="Print a bookmark summary report to the terminal",
+    )
+    report_outputs.add_argument(
+        "--report-file",
+        help="Write the bookmark summary report to a file",
+    )
     args = parser.parse_args()
 
     source_path = Path(args.source)
@@ -500,7 +596,7 @@ def main() -> int:
         "single" if args.group_domains else "split" if args.split_domains else "none"
     )
     excluded_domains = parse_domain_list(args.exclude_domains)
-    total, unique, domain_folders = flatten_bookmarks(
+    summary = flatten_bookmarks(
         source_path,
         target_path,
         args.sort,
@@ -515,16 +611,25 @@ def main() -> int:
             else target_path
         )
         print(
-            f"Parsed {total} bookmarks, wrote {unique} unique bookmarks into {domain_folders} html files under {output_location}"
+            f"Parsed {summary.original_count} bookmarks, wrote {summary.resulting_count} unique bookmarks into {summary.generated_file_count} html files under {output_location}"
         )
     elif group_mode == "single":
         print(
-            f"Parsed {total} bookmarks, wrote {unique} unique bookmarks into grouped HTML at {target_path}"
+            f"Parsed {summary.original_count} bookmarks, wrote {summary.resulting_count} unique bookmarks into grouped HTML at {target_path}"
         )
     else:
         print(
-            f"Parsed {total} bookmarks, wrote {unique} unique bookmarks to {target_path}"
+            f"Parsed {summary.original_count} bookmarks, wrote {summary.resulting_count} unique bookmarks to {target_path}"
         )
+
+    report_requested = args.report or args.report_file is not None
+    if report_requested:
+        report_text = build_report(summary, group_mode)
+        if args.report_file:
+            Path(args.report_file).write_text(report_text + "\n", encoding="utf-8")
+        else:
+            print()
+            print(report_text)
     return 0
 
 
