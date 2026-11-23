@@ -12,6 +12,7 @@ The script exits with an error if the source file is missing or if the source an
 It creates missing parent directories for flat HTML and report outputs. HTML and report files are written atomically through temporary files so interrupted writes do not leave partial bookmark files.
 When split output filenames collide after sanitization, one domain receives a stable short-hash suffix instead of overwriting the other domain's file.
 Domain grouping uses the system Public Suffix List when available, with a conservative TLD fallback otherwise. IP addresses are grouped by address and non-network URL schemes are collected in `unsorted`.
+Reports include duplicate counts, excluded counts, per-domain excluded counts, and a reconciliation check showing that original bookmarks equal duplicates plus exclusions plus remaining results.
 
 ## Goal
 

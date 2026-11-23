@@ -48,6 +48,8 @@ class RunSummary:
     group_count: int
     groups: list[OutputGroupSummary]
     generated_file_count: int = 0
+    excluded_count: int = 0
+    excluded_groups: list[OutputGroupSummary] = field(default_factory=list)
 
 
 class BookmarkParser(HTMLParser):
@@ -392,9 +394,34 @@ def build_report(summary: RunSummary, output_mode: str) -> str:
         "Bookmark Report",
         f"- original number of bookmarks: {summary.original_count}",
         f"- duplicate bookmarks deleted: {summary.duplicate_count}",
+        f"- excluded bookmarks deleted: {summary.excluded_count}",
         f"- resulting number of bookmark groups/folders: {summary.group_count}",
         f"- total number of resulting bookmarks: {summary.resulting_count}",
     ]
+
+    reconciliation = (
+        summary.duplicate_count
+        + summary.excluded_count
+        + summary.resulting_count
+    )
+    lines.append(
+        f"- bookmark reconciliation: "
+        f"{summary.original_count} original = "
+        f"{summary.duplicate_count} duplicates + "
+        f"{summary.excluded_count} excluded + "
+        f"{summary.resulting_count} resulting "
+        f"({'matched' if reconciliation == summary.original_count else 'mismatch'})"
+    )
+
+    if summary.excluded_groups:
+        lines.append("- excluded bookmark domains:")
+        total = summary.excluded_count or 0
+        for group in sorted(
+            summary.excluded_groups,
+            key=lambda item: (-item.count, item.name.casefold()),
+        ):
+            percentage = (group.count / total * 100) if total else 0.0
+            lines.append(f"  - {group.name}: {group.count} ({percentage:.2f}%)")
 
     if summary.groups:
         lines.append("- generated bookmark groups:")
@@ -593,6 +620,11 @@ def flatten_bookmarks(
     duplicate_count = original_count - len(entries)
     entries, excluded_by_domain = partition_excluded_entries(entries, excluded_domains)
     main_groups = collect_group_summaries(entries, sort_mode, group_mode)
+    excluded_groups = [
+        OutputGroupSummary(name=domain, count=len(domain_entries))
+        for domain, domain_entries in excluded_by_domain.items()
+    ]
+    excluded_count = sum(len(domain_entries) for domain_entries in excluded_by_domain.values())
 
     generated_file_count = 0
     if split_excluded_domains and excluded_by_domain:
@@ -617,6 +649,8 @@ def flatten_bookmarks(
             group_count=len(main_groups),
             groups=main_groups,
             generated_file_count=written_files + generated_file_count,
+            excluded_count=excluded_count,
+            excluded_groups=excluded_groups,
         )
 
     if group_mode == "single":
@@ -628,6 +662,8 @@ def flatten_bookmarks(
             group_count=len(main_groups),
             groups=main_groups,
             generated_file_count=1 + generated_file_count,
+            excluded_count=excluded_count,
+            excluded_groups=excluded_groups,
         )
 
     write_flat_output(entries, target_path, "Bookmarks")
@@ -638,6 +674,8 @@ def flatten_bookmarks(
         group_count=len(main_groups),
         groups=main_groups,
         generated_file_count=generated_file_count,
+        excluded_count=excluded_count,
+        excluded_groups=excluded_groups,
     )
 
 
