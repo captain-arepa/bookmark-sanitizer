@@ -9,6 +9,7 @@ python3 flatten_vivaldi_bookmarks.py vivaldi_bookmarks_11_23_26.html bookmarks_f
 ```
 
 The script exits with an error if the source file is missing or if the source and output refer to the same file.
+It creates missing parent directories for flat HTML and report outputs. HTML and report files are written atomically through temporary files so interrupted writes do not leave partial bookmark files.
 
 ## Goal
 

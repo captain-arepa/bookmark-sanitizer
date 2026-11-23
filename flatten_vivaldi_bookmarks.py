@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from html.entities import name2codepoint
@@ -411,17 +413,40 @@ def build_grouped_output(
     return "\n".join(lines)
 
 
+def write_text_atomic(target_path: Path, text: str) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target_path.parent,
+            prefix=f".{target_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(text)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_path = Path(temp_file.name)
+        temp_path.replace(target_path)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
 def write_flat_output(
     entries: Iterable[BookmarkEntry], target_path: Path, title: str
 ) -> None:
-    target_path.write_text(build_output(entries, title), encoding="utf-8")
+    write_text_atomic(target_path, build_output(entries, title))
 
 
 def write_grouped_html_output(
     entries: Iterable[BookmarkEntry], target_path: Path, sort_mode: str, title: str
 ) -> None:
-    target_path.write_text(
-        build_grouped_output(entries, sort_mode, title), encoding="utf-8"
+    write_text_atomic(
+        target_path, build_grouped_output(entries, sort_mode, title)
     )
 
 
@@ -596,14 +621,17 @@ def main() -> int:
         "single" if args.group_domains else "split" if args.split_domains else "none"
     )
     excluded_domains = parse_domain_list(args.exclude_domains)
-    summary = flatten_bookmarks(
-        source_path,
-        target_path,
-        args.sort,
-        group_mode,
-        excluded_domains,
-        args.split_excluded_domains,
-    )
+    try:
+        summary = flatten_bookmarks(
+            source_path,
+            target_path,
+            args.sort,
+            group_mode,
+            excluded_domains,
+            args.split_excluded_domains,
+        )
+    except (OSError, UnicodeDecodeError) as error:
+        parser.error(f"unable to process bookmarks: {error}")
     if group_mode == "split":
         output_location = (
             target_path.with_suffix("")
@@ -626,7 +654,10 @@ def main() -> int:
     if report_requested:
         report_text = build_report(summary, group_mode)
         if args.report_file:
-            Path(args.report_file).write_text(report_text + "\n", encoding="utf-8")
+            write_text_atomic(
+                Path(args.report_file),
+                report_text + "\n",
+            )
         else:
             print()
             print(report_text)
