@@ -1,3 +1,5 @@
 *.html
 *.txt
 *.log
+./bookmarks_excluded/
+./output_excluded/

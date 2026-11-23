@@ -1,5 +1,15 @@
 # Vivaldi bookmark flattening process
 
+## Usage
+
+The source export and output path are both required:
+
+```console
+python3 flatten_vivaldi_bookmarks.py vivaldi_bookmarks_11_23_26.html bookmarks_flattened.html --report
+```
+
+The script exits with an error if the source file is missing or if the source and output refer to the same file.
+
 ## Goal
 
 Take a nested Vivaldi bookmark export, flatten bookmarks, remove duplicates, and optionally group repeated domains into folders.

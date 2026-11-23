@@ -541,14 +541,10 @@ def main() -> int:
     )
     parser.add_argument(
         "source",
-        nargs="?",
-        default="bookmarks_9_28_26.html",
         help="Input bookmark export HTML",
     )
     parser.add_argument(
         "output",
-        nargs="?",
-        default="bookmarks_9_28_26_flattened.html",
         help="Output flattened HTML",
     )
     parser.add_argument(
@@ -592,6 +588,10 @@ def main() -> int:
 
     source_path = Path(args.source)
     target_path = Path(args.output)
+    if not source_path.is_file():
+        parser.error(f"source bookmark export does not exist: {source_path}")
+    if source_path.resolve() == target_path.resolve():
+        parser.error("source and output paths must be different")
     group_mode = (
         "single" if args.group_domains else "split" if args.split_domains else "none"
     )
