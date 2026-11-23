@@ -9,6 +9,7 @@ bookmarks or optional domain-based folders under a single root folder.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import os
 import tempfile
@@ -258,6 +259,34 @@ def sanitize_filename(value: str) -> str:
     return sanitized or "unsorted"
 
 
+def allocate_domain_filename(
+    domain: str,
+    used_names: dict[str, str],
+    reserved_names: set[str] | None = None,
+) -> str:
+    base_name = sanitize_filename(domain)
+    file_name = f"{base_name}.html"
+    reserved_names = reserved_names or set()
+
+    existing_domain = used_names.get(file_name)
+    if existing_domain is not None:
+        if existing_domain == domain:
+            return file_name
+        digest = hashlib.sha1(domain.encode("utf-8")).hexdigest()[:8]
+        file_name = f"{base_name}-{digest}.html"
+    collision_index = 2
+    while file_name in used_names or file_name in reserved_names:
+        existing_domain = used_names.get(file_name)
+        if existing_domain == domain:
+            break
+        digest = hashlib.sha1(domain.encode("utf-8")).hexdigest()[:8]
+        file_name = f"{base_name}-{digest}-{collision_index}.html"
+        collision_index += 1
+
+    used_names[file_name] = domain
+    return file_name
+
+
 def parse_domain_list(value: str) -> set[str]:
     domains = {
         part.strip().casefold().rstrip(".") for part in value.split("|") if part.strip()
@@ -462,9 +491,16 @@ def write_grouped_outputs(
         sort_entries(entries, sort_mode), sort_mode
     )
     written_files = 0
+    used_names: dict[str, str] = {}
+    reserved_names = {"unsorted.html"}
 
     for _, domain, domain_entries in folders:
-        file_path = target_directory / f"{sanitize_filename(domain)}.html"
+        file_name = allocate_domain_filename(
+            domain,
+            used_names,
+            reserved_names,
+        )
+        file_path = target_directory / file_name
         write_flat_output(domain_entries, file_path, domain)
         written_files += 1
 
@@ -487,8 +523,13 @@ def write_excluded_domain_outputs(
     target_directory.mkdir(parents=True, exist_ok=True)
 
     written_files = 0
+    used_names: dict[str, str] = {}
     for domain in sorted(excluded_by_domain):
-        file_path = target_directory / f"{sanitize_filename(domain)}.html"
+        file_name = allocate_domain_filename(
+            domain,
+            used_names,
+        )
+        file_path = target_directory / file_name
         write_flat_output(
             sort_entries(excluded_by_domain[domain], sort_mode), file_path, domain
         )
