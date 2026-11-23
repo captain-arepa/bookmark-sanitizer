@@ -11,10 +11,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html
+import ipaddress
 import os
 import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from html.entities import name2codepoint
 from html.parser import HTMLParser
 from pathlib import Path
@@ -123,8 +125,42 @@ def dedupe_entries(entries: Iterable[BookmarkEntry]) -> list[BookmarkEntry]:
 
 def extract_hostname(href: str) -> str:
     parsed = urlparse(href)
+    if parsed.scheme.casefold() not in {"ftp", "http", "https", "ws", "wss"}:
+        return ""
     hostname = parsed.hostname or ""
     return hostname.casefold().rstrip(".")
+
+
+@lru_cache(maxsize=1)
+def load_public_suffix_rules() -> tuple[set[str], set[str], set[str]]:
+    exact_rules: set[str] = set()
+    wildcard_rules: set[str] = set()
+    exception_rules: set[str] = set()
+    data_paths = (
+        Path("/usr/share/publicsuffix/public_suffix_list.dat"),
+        Path("/usr/local/share/publicsuffix/public_suffix_list.dat"),
+    )
+    data_path = next((path for path in data_paths if path.is_file()), None)
+    if data_path is None:
+        return exact_rules, wildcard_rules, exception_rules
+
+    try:
+        lines = data_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return exact_rules, wildcard_rules, exception_rules
+
+    for line in lines:
+        rule = line.strip()
+        if not rule or rule.startswith("//"):
+            continue
+        if rule.startswith("!"):
+            exception_rules.add(rule[1:].casefold())
+        elif rule.startswith("*."):
+            wildcard_rules.add(rule[2:].casefold())
+        else:
+            exact_rules.add(rule.casefold())
+
+    return exact_rules, wildcard_rules, exception_rules
 
 
 def extract_absolute_domain(href: str) -> str:
@@ -132,45 +168,49 @@ def extract_absolute_domain(href: str) -> str:
     if not hostname:
         return ""
 
-    if hostname.replace(".", "").isdigit():
-        return hostname
+    try:
+        return str(ipaddress.ip_address(hostname))
+    except ValueError:
+        pass
 
+    exact_rules, wildcard_rules, exception_rules = load_public_suffix_rules()
     labels = hostname.split(".")
-    if len(labels) <= 2:
+
+    matching_exception = ""
+    for rule in exception_rules:
+        if hostname == rule or hostname.endswith("." + rule):
+            if len(rule.split(".")) > len(matching_exception.split(".")):
+                matching_exception = rule
+    if matching_exception:
+        if hostname == matching_exception:
+            public_suffix = ".".join(matching_exception.split(".")[1:])
+        else:
+            public_suffix = matching_exception
+    else:
+        public_suffix = ""
+        for rule in exact_rules:
+            if hostname == rule or hostname.endswith("." + rule):
+                if len(rule.split(".")) > len(public_suffix.split(".")):
+                    public_suffix = rule
+
+        for base in wildcard_rules:
+            if hostname == base or hostname.endswith("." + base):
+                candidate_labels = len(base.split(".")) + 1
+                candidate = ".".join(labels[-candidate_labels:])
+                if len(candidate.split(".")) > len(public_suffix.split(".")):
+                    public_suffix = candidate
+
+    if not public_suffix:
+        public_suffix = labels[-1]
+
+    if hostname == public_suffix:
         return hostname
 
-    second_level_suffixes = {
-        "ac.uk",
-        "co.uk",
-        "com.au",
-        "com.br",
-        "com.cn",
-        "com.hk",
-        "com.mx",
-        "com.my",
-        "com.ph",
-        "com.pl",
-        "com.pt",
-        "com.sa",
-        "com.sg",
-        "com.tr",
-        "com.tw",
-        "co.id",
-        "co.il",
-        "co.in",
-        "co.jp",
-        "co.kr",
-        "co.nz",
-        "co.za",
-        "gov.uk",
-        "net.au",
-        "org.au",
-        "org.uk",
-    }
-    suffix = ".".join(labels[-2:])
-    if suffix in second_level_suffixes and len(labels) >= 3:
-        return ".".join(labels[-3:])
-    return suffix
+    suffix_labels = public_suffix.split(".")
+    registered_label_count = len(suffix_labels) + 1
+    if len(labels) >= registered_label_count:
+        return ".".join(labels[-registered_label_count:])
+    return hostname
 
 
 def entry_sort_key(entry: BookmarkEntry, sort_mode: str) -> tuple[str, str, str, str]:
