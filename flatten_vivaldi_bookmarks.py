@@ -24,6 +24,8 @@ import re
 from urllib.parse import urlsplit, urlunsplit, urlparse
 from typing import Iterable
 
+__version__ = "1.0.0"
+
 
 @dataclass(slots=True)
 class BookmarkEntry:
@@ -50,6 +52,7 @@ class RunSummary:
     generated_file_count: int = 0
     excluded_count: int = 0
     excluded_groups: list[OutputGroupSummary] = field(default_factory=list)
+    output_paths: list[Path] = field(default_factory=list)
 
 
 class BookmarkParser(HTMLParser):
@@ -608,6 +611,52 @@ def write_grouped_html_output(
     )
 
 
+def grouped_output_plan(
+    entries: Iterable[BookmarkEntry], target_path: Path, sort_mode: str
+) -> list[tuple[Path, str, list[BookmarkEntry]]]:
+    target_directory = target_path
+    if target_directory.suffix.lower() == ".html":
+        target_directory = target_directory.with_suffix("")
+
+    folders, unsorted_entries = grouped_items(
+        sort_entries(entries, sort_mode), sort_mode
+    )
+    plan: list[tuple[Path, str, list[BookmarkEntry]]] = []
+    used_names: dict[str, str] = {}
+    reserved_names = {"unsorted.html"}
+
+    for _, domain, domain_entries in folders:
+        file_name = allocate_domain_filename(domain, used_names, reserved_names)
+        plan.append((target_directory / file_name, domain, domain_entries))
+
+    if unsorted_entries:
+        plan.append((target_directory / "unsorted.html", "unsorted", unsorted_entries))
+    return plan
+
+
+def excluded_output_plan(
+    excluded_by_domain: dict[str, list[BookmarkEntry]],
+    target_path: Path,
+    sort_mode: str,
+) -> list[tuple[Path, str, list[BookmarkEntry]]]:
+    target_directory = target_path
+    if target_directory.suffix.lower() == ".html":
+        target_directory = target_directory.with_suffix("")
+
+    used_names: dict[str, str] = {}
+    plan = []
+    for domain in sorted(excluded_by_domain):
+        file_name = allocate_domain_filename(domain, used_names)
+        plan.append(
+            (
+                target_directory / file_name,
+                domain,
+                sort_entries(excluded_by_domain[domain], sort_mode),
+            )
+        )
+    return plan
+
+
 def write_grouped_outputs(
     entries: Iterable[BookmarkEntry], target_path: Path, sort_mode: str
 ) -> int:
@@ -616,29 +665,10 @@ def write_grouped_outputs(
         target_directory = target_directory.with_suffix("")
     target_directory.mkdir(parents=True, exist_ok=True)
 
-    folders, unsorted_entries = grouped_items(
-        sort_entries(entries, sort_mode), sort_mode
-    )
-    written_files = 0
-    used_names: dict[str, str] = {}
-    reserved_names = {"unsorted.html"}
-
-    for _, domain, domain_entries in folders:
-        file_name = allocate_domain_filename(
-            domain,
-            used_names,
-            reserved_names,
-        )
-        file_path = target_directory / file_name
-        write_flat_output(domain_entries, file_path, domain)
-        written_files += 1
-
-    if unsorted_entries:
-        file_path = target_directory / "unsorted.html"
-        write_flat_output(unsorted_entries, file_path, "unsorted")
-        written_files += 1
-
-    return written_files
+    plan = grouped_output_plan(entries, target_path, sort_mode)
+    for file_path, title, domain_entries in plan:
+        write_flat_output(domain_entries, file_path, title)
+    return len(plan)
 
 
 def write_excluded_domain_outputs(
@@ -651,20 +681,10 @@ def write_excluded_domain_outputs(
         target_directory = target_directory.with_suffix("")
     target_directory.mkdir(parents=True, exist_ok=True)
 
-    written_files = 0
-    used_names: dict[str, str] = {}
-    for domain in sorted(excluded_by_domain):
-        file_name = allocate_domain_filename(
-            domain,
-            used_names,
-        )
-        file_path = target_directory / file_name
-        write_flat_output(
-            sort_entries(excluded_by_domain[domain], sort_mode), file_path, domain
-        )
-        written_files += 1
-
-    return written_files
+    plan = excluded_output_plan(excluded_by_domain, target_path, sort_mode)
+    for file_path, title, entries in plan:
+        write_flat_output(entries, file_path, title)
+    return len(plan)
 
 
 def flatten_bookmarks(
@@ -674,6 +694,10 @@ def flatten_bookmarks(
     group_mode: str,
     excluded_domains: set[str],
     split_excluded_domains: bool,
+    *,
+    dry_run: bool = False,
+    overwrite: bool = False,
+    additional_output_paths: Iterable[Path] = (),
 ) -> RunSummary:
     parser = BookmarkParser()
     parser.feed(source_path.read_text(encoding="utf-8"))
@@ -688,7 +712,7 @@ def flatten_bookmarks(
     ]
     excluded_count = sum(len(domain_entries) for domain_entries in excluded_by_domain.values())
 
-    generated_file_count = 0
+    excluded_target: Path | None = None
     if split_excluded_domains and excluded_by_domain:
         excluded_target = (
             target_path.with_suffix("")
@@ -696,39 +720,57 @@ def flatten_bookmarks(
             else target_path
         )
         excluded_target = excluded_target.parent / f"{excluded_target.name}_excluded"
-        generated_file_count = write_excluded_domain_outputs(
-            excluded_by_domain,
-            excluded_target,
-            sort_mode,
-        )
 
     if group_mode == "split":
-        written_files = write_grouped_outputs(entries, target_path, sort_mode)
-        return RunSummary(
-            original_count=original_count,
-            duplicate_count=duplicate_count,
-            resulting_count=len(entries),
-            group_count=len(main_groups),
-            groups=main_groups,
-            generated_file_count=written_files + generated_file_count,
-            excluded_count=excluded_count,
-            excluded_groups=excluded_groups,
-        )
+        main_output_paths = [
+            path for path, _, _ in grouped_output_plan(entries, target_path, sort_mode)
+        ]
+    else:
+        main_output_paths = [target_path]
 
-    if group_mode == "single":
-        write_grouped_html_output(entries, target_path, sort_mode, "Bookmarks")
-        return RunSummary(
-            original_count=original_count,
-            duplicate_count=duplicate_count,
-            resulting_count=len(entries),
-            group_count=len(main_groups),
-            groups=main_groups,
-            generated_file_count=1 + generated_file_count,
-            excluded_count=excluded_count,
-            excluded_groups=excluded_groups,
+    excluded_plan = (
+        excluded_output_plan(excluded_by_domain, excluded_target, sort_mode)
+        if excluded_target is not None
+        else []
+    )
+    planned_output_paths = (
+        main_output_paths
+        + [path for path, _, _ in excluded_plan]
+        + list(additional_output_paths)
+    )
+    resolved_paths = [path.resolve() for path in planned_output_paths]
+    if source_path.resolve() in resolved_paths:
+        raise ValueError("an output path resolves to the source bookmark export")
+    if len(set(resolved_paths)) != len(resolved_paths):
+        raise ValueError("multiple outputs resolve to the same path")
+    if not overwrite:
+        existing_path = next(
+            (path for path in planned_output_paths if path.exists()),
+            None,
         )
+        if existing_path is not None:
+            raise FileExistsError(
+                f"output already exists: {existing_path}; pass --overwrite to replace it"
+            )
 
-    write_flat_output(entries, target_path, "Bookmarks")
+    if not dry_run:
+        if excluded_target is not None:
+            write_excluded_domain_outputs(
+                excluded_by_domain,
+                excluded_target,
+                sort_mode,
+            )
+
+        if group_mode == "split":
+            write_grouped_outputs(entries, target_path, sort_mode)
+        elif group_mode == "single":
+            write_grouped_html_output(entries, target_path, sort_mode, "Bookmarks")
+        else:
+            write_flat_output(entries, target_path, "Bookmarks")
+
+    generated_file_count = len(excluded_plan)
+    if group_mode in {"single", "split"}:
+        generated_file_count += len(main_output_paths)
     return RunSummary(
         original_count=original_count,
         duplicate_count=duplicate_count,
@@ -738,6 +780,7 @@ def flatten_bookmarks(
         generated_file_count=generated_file_count,
         excluded_count=excluded_count,
         excluded_groups=excluded_groups,
+        output_paths=planned_output_paths,
     )
 
 
@@ -752,6 +795,11 @@ def main() -> int:
     parser.add_argument(
         "output",
         help="Output flattened HTML",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "--sort",
@@ -780,6 +828,27 @@ def main() -> int:
         action="store_true",
         help="Write one HTML file per excluded domain alongside the main output",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse and preview planned outputs without writing files",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing output files",
+    )
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show detailed processing configuration",
+    )
+    verbosity.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress routine status messages",
+    )
     report_outputs = parser.add_mutually_exclusive_group()
     report_outputs.add_argument(
         "--report",
@@ -802,6 +871,23 @@ def main() -> int:
         "single" if args.group_domains else "split" if args.split_domains else "none"
     )
     excluded_domains = parse_domain_list(args.exclude_domains)
+    report_path = Path(args.report_file) if args.report_file else None
+    if not args.quiet:
+        print(f"Input: {source_path}")
+        print(f"Output: {target_path} ({group_mode} mode)")
+        if args.report:
+            print("Report: terminal")
+        elif report_path is not None:
+            print(f"Report: {report_path}")
+        if args.verbose:
+            print(f"Sort: {args.sort}")
+            print(
+                "Excluded domains: "
+                + (", ".join(sorted(excluded_domains)) or "none")
+            )
+            print(f"Split excluded domains: {args.split_excluded_domains}")
+            print(f"Dry run: {args.dry_run}")
+
     try:
         summary = flatten_bookmarks(
             source_path,
@@ -810,10 +896,22 @@ def main() -> int:
             group_mode,
             excluded_domains,
             args.split_excluded_domains,
+            dry_run=args.dry_run,
+            overwrite=args.overwrite,
+            additional_output_paths=[report_path] if report_path else (),
         )
-    except (OSError, UnicodeDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         parser.error(f"unable to process bookmarks: {error}")
-    if group_mode == "split":
+
+    if args.dry_run:
+        print(
+            f"Dry run: parsed {summary.original_count} bookmarks, "
+            f"{summary.resulting_count} unique bookmarks would remain; "
+            f"{len(summary.output_paths)} output file(s) planned. No files written."
+        )
+        for output_path in summary.output_paths:
+            print(f"  {output_path}")
+    elif not args.quiet and group_mode == "split":
         output_location = (
             target_path.with_suffix("")
             if target_path.suffix.lower() == ".html"
@@ -822,11 +920,11 @@ def main() -> int:
         print(
             f"Parsed {summary.original_count} bookmarks, wrote {summary.resulting_count} unique bookmarks into {summary.generated_file_count} html files under {output_location}"
         )
-    elif group_mode == "single":
+    elif not args.quiet and group_mode == "single":
         print(
             f"Parsed {summary.original_count} bookmarks, wrote {summary.resulting_count} unique bookmarks into grouped HTML at {target_path}"
         )
-    else:
+    elif not args.quiet:
         print(
             f"Parsed {summary.original_count} bookmarks, wrote {summary.resulting_count} unique bookmarks to {target_path}"
         )
@@ -834,12 +932,12 @@ def main() -> int:
     report_requested = args.report or args.report_file is not None
     if report_requested:
         report_text = build_report(summary, group_mode)
-        if args.report_file:
+        if args.report_file and not args.dry_run:
             write_text_atomic(
-                Path(args.report_file),
+                report_path,
                 report_text + "\n",
             )
-        else:
+        elif args.report or args.dry_run:
             print()
             print(report_text)
     return 0

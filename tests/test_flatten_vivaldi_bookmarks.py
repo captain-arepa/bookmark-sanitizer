@@ -2,7 +2,7 @@ import io
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -206,6 +206,106 @@ class GroupingAndExclusionTests(unittest.TestCase):
                 "singleton</A>",
                 (output_dir / "unsorted.html").read_text(encoding="utf-8"),
             )
+
+
+class CliTests(unittest.TestCase):
+    def test_existing_outputs_require_overwrite_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.html"
+            target = Path(directory) / "output.html"
+            source.write_text(
+                '<A HREF="https://example.com/">Bookmark</A>', encoding="utf-8"
+            )
+            target.write_text("keep me", encoding="utf-8")
+            stderr = io.StringIO()
+
+            with patch.object(
+                sys, "argv", ["flatten_vivaldi_bookmarks.py", str(source), str(target)]
+            ):
+                with redirect_stdout(io.StringIO()), redirect_stderr(
+                    stderr
+                ), self.assertRaises(SystemExit) as result:
+                    bookmarks.main()
+
+            self.assertEqual(result.exception.code, 2)
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep me")
+            self.assertIn("--overwrite", stderr.getvalue())
+
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "flatten_vivaldi_bookmarks.py",
+                    str(source),
+                    str(target),
+                    "--overwrite",
+                    "--quiet",
+                ],
+            ), redirect_stdout(io.StringIO()):
+                self.assertEqual(bookmarks.main(), 0)
+            self.assertIn(
+                'HREF="https://example.com/"',
+                target.read_text(encoding="utf-8"),
+            )
+
+    def test_dry_run_previews_paths_without_creating_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.html"
+            target = Path(directory) / "new" / "output.html"
+            report = Path(directory) / "new" / "report.txt"
+            source.write_text(
+                '<A HREF="https://example.com/">Bookmark</A>', encoding="utf-8"
+            )
+            stdout = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "flatten_vivaldi_bookmarks.py",
+                    str(source),
+                    str(target),
+                    "--dry-run",
+                    "--report-file",
+                    str(report),
+                    "--verbose",
+                ],
+            ), redirect_stdout(stdout):
+                self.assertEqual(bookmarks.main(), 0)
+
+            self.assertFalse(target.exists())
+            self.assertFalse(report.exists())
+            self.assertIn(str(target), stdout.getvalue())
+            self.assertIn(str(report), stdout.getvalue())
+            self.assertIn("No files written", stdout.getvalue())
+            self.assertIn("Sort: alphabetic", stdout.getvalue())
+
+    def test_version_and_verbosity_option_validation(self) -> None:
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", ["flatten_vivaldi_bookmarks.py", "--version"]):
+            with redirect_stdout(stdout), self.assertRaises(SystemExit) as result:
+                bookmarks.main()
+        self.assertEqual(result.exception.code, 0)
+        self.assertIn(bookmarks.__version__, stdout.getvalue())
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.html"
+            source.write_text("", encoding="utf-8")
+            stderr = io.StringIO()
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "flatten_vivaldi_bookmarks.py",
+                    str(source),
+                    str(Path(directory) / "output.html"),
+                    "--verbose",
+                    "--quiet",
+                ],
+            ):
+                with redirect_stderr(stderr), self.assertRaises(SystemExit) as result:
+                    bookmarks.main()
+            self.assertEqual(result.exception.code, 2)
+            self.assertIn("not allowed with argument", stderr.getvalue())
 
 
 if __name__ == "__main__":
