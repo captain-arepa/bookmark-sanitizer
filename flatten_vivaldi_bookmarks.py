@@ -21,7 +21,7 @@ from html.entities import name2codepoint
 from html.parser import HTMLParser
 from pathlib import Path
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit, urlparse
 from typing import Iterable
 
 
@@ -62,6 +62,8 @@ class BookmarkParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag.lower() == "a":
+            if self._in_anchor:
+                self._finish_anchor()
             self._in_anchor = True
             self._anchor_attrs = [(name, value or "") for name, value in attrs]
             self._anchor_text_parts = []
@@ -82,20 +84,27 @@ class BookmarkParser(HTMLParser):
         if self._in_anchor:
             try:
                 codepoint = (
-                    int(name[1:], 16) if name.lower().startswith("x") else int(name)
+                    int(name[1:], 16)
+                    if name.lower().startswith("x")
+                    else int(name, 10)
                 )
-            except ValueError:
+            except (ValueError, OverflowError):
                 self._anchor_text_parts.append(f"&#{name};")
             else:
-                self._anchor_text_parts.append(chr(codepoint))
+                try:
+                    self._anchor_text_parts.append(chr(codepoint))
+                except (ValueError, OverflowError):
+                    self._anchor_text_parts.append(f"&#{name};")
 
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() != "a" or not self._in_anchor:
             return
+        self._finish_anchor()
 
+    def _finish_anchor(self) -> None:
         attrs = dict(self._anchor_attrs)
         href = html.unescape(attrs.get("HREF", attrs.get("href", ""))).strip()
-        title = html.unescape("".join(self._anchor_text_parts)).strip()
+        title = "".join(self._anchor_text_parts).strip()
 
         if href and title:
             self.entries.append(
@@ -112,12 +121,68 @@ class BookmarkParser(HTMLParser):
         self._anchor_attrs = []
         self._anchor_text_parts = []
 
+    def close(self) -> None:
+        super().close()
+        if self._in_anchor:
+            self._finish_anchor()
+
+
+def normalize_url_for_dedupe(href: str) -> str:
+    stripped = href.strip()
+    try:
+        parsed = urlsplit(stripped)
+    except ValueError:
+        return stripped.casefold()
+
+    scheme = parsed.scheme.casefold()
+    if not scheme:
+        return stripped.casefold()
+
+    hostname = parsed.hostname
+    if hostname is None:
+        return stripped.casefold()
+
+    hostname = hostname.casefold().rstrip(".")
+    try:
+        port = parsed.port
+    except ValueError:
+        return stripped.casefold()
+
+    userinfo = ""
+    if parsed.username is not None:
+        userinfo = parsed.username
+        if parsed.password is not None:
+            userinfo += ":" + parsed.password
+        userinfo += "@"
+
+    if ":" in hostname and not hostname.startswith("["):
+        host = f"[{hostname}]"
+    else:
+        host = hostname
+
+    default_ports = {
+        "ftp": 21,
+        "http": 80,
+        "https": 443,
+        "ws": 80,
+        "wss": 443,
+    }
+    if port is not None and port != default_ports.get(scheme):
+        host = f"{host}:{port}"
+
+    netloc = userinfo + host
+    path = parsed.path
+    if path == "/" and not parsed.query and not parsed.fragment:
+        path = ""
+
+    return urlunsplit((scheme, netloc, path, parsed.query, parsed.fragment))
+
 
 def dedupe_entries(entries: Iterable[BookmarkEntry]) -> list[BookmarkEntry]:
     seen: set[str] = set()
     deduped: list[BookmarkEntry] = []
     for entry in entries:
-        key = entry.href
+        key = normalize_url_for_dedupe(entry.href)
         if key in seen:
             continue
         seen.add(key)
@@ -221,11 +286,11 @@ def entry_sort_key(entry: BookmarkEntry, sort_mode: str) -> tuple[str, str, str,
             entry.domain.casefold(),
             entry.hostname.casefold(),
             entry.title.casefold(),
-            entry.href.casefold(),
+            normalize_url_for_dedupe(entry.href),
         )
     return (
         entry.title.casefold(),
-        entry.href.casefold(),
+        normalize_url_for_dedupe(entry.href),
         entry.domain.casefold(),
         entry.hostname.casefold(),
     )

@@ -41,7 +41,9 @@ Take a nested Vivaldi bookmark export, flatten bookmarks, remove duplicates, and
 ## Notes
 
 - The script keeps the original bookmark attributes where possible, including icons and descriptions.
+- The parser recovers closed, malformed, nested, and unclosed anchor elements and decodes Unicode, named entities, and numeric character references safely.
 - Deduplication is URL-based, so bookmarks pointing to the same link are treated as duplicates even if their folder placement or title differs.
+- Deduplication normalizes scheme and hostname case, removes default HTTP/HTTPS/FTP/WebSocket ports, and treats an empty root path as equivalent to `/`. It preserves HTTP versus HTTPS, query strings, fragments, and non-root trailing slashes.
 - The domain grouping uses a best-effort absolute-domain heuristic so bookmarks from the same registered site can be collected together.
 - `--group-domains` and `--split-domains` are mutually exclusive.
 - When domain grouping is enabled, singletons and entries without a shared domain are collected into `unsorted` or `unsorted.html` depending on the chosen mode.
