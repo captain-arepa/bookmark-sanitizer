@@ -249,10 +249,7 @@ def extract_absolute_domain(href: str) -> str:
             if len(rule.split(".")) > len(matching_exception.split(".")):
                 matching_exception = rule
     if matching_exception:
-        if hostname == matching_exception:
-            public_suffix = ".".join(matching_exception.split(".")[1:])
-        else:
-            public_suffix = matching_exception
+        public_suffix = ".".join(matching_exception.split(".")[1:])
     else:
         public_suffix = ""
         for rule in exact_rules:

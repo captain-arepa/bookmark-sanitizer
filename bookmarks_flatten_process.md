@@ -8,6 +8,8 @@ The source export and output path are both required:
 python3 flatten_vivaldi_bookmarks.py vivaldi_bookmarks_11_23_26.html bookmarks_flattened.html --report
 ```
 
+Run the regression tests with `python3 -m unittest discover -s tests -v`.
+
 The script exits with an error if the source file is missing or if the source and output refer to the same file.
 It creates missing parent directories for flat HTML and report outputs. HTML and report files are written atomically through temporary files so interrupted writes do not leave partial bookmark files.
 When split output filenames collide after sanitization, one domain receives a stable short-hash suffix instead of overwriting the other domain's file.
